@@ -582,6 +582,53 @@ footer {
   line-height: 1.7;
 }
 
+/* ─── Source banner ──────────────────────────────────────── */
+.source-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: .78rem;
+  margin-bottom: 16px;
+  border: 1px solid;
+  transition: background var(--transition), color var(--transition);
+}
+.source-banner.loading { background: #f0f9ff; border-color: #bae6fd; color: #0369a1; }
+.source-banner.live    { background: #f0fdf4; border-color: #86efac; color: #15803d; }
+.source-banner.sample  { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+[data-theme="dark"] .source-banner.loading { background: #0c2233; border-color: #1d4e70; color: #38bdf8; }
+[data-theme="dark"] .source-banner.live    { background: #072c11; border-color: #166534; color: #4ade80; }
+[data-theme="dark"] .source-banner.sample  { background: #2a1c00; border-color: #713f12; color: #fbbf24; }
+
+.src-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.source-banner.loading .src-dot { animation: dot-pulse 1.3s ease-in-out infinite; }
+@keyframes dot-pulse {
+  0%,100% { opacity:1; transform:scale(1); }
+  50%     { opacity:.35; transform:scale(.75); }
+}
+.src-link { color: inherit; opacity: .75; font-weight: 600; }
+
+/* ─── Data source pill on cards ──────────────────────────── */
+.data-pill {
+  font-size: .65rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-top: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.data-pill.live { background: rgba(22,163,74,.1);   color: var(--up); }
+.data-pill.est  { background: rgba(107,114,128,.1); color: var(--flat); }
+[data-theme="dark"] .data-pill.live { background: rgba(74,222,128,.12); }
+
 /* ─── Responsive ─────────────────────────────────────────── */
 @media (max-width: 600px) {
   .nav-brand .subtitle { display: none; }
@@ -665,6 +712,12 @@ footer {
     </div>
   </div>
 
+  <!-- Source banner -->
+  <div id="source-banner" class="source-banner loading">
+    <span class="src-dot"></span>
+    <span id="src-text">Jungiamasi prie Eurostat live duomenų…</span>
+  </div>
+
   <!-- Toolbar -->
   <div class="toolbar">
     <div class="cat-chips" id="cat-chips">
@@ -717,15 +770,13 @@ footer {
   </div>
 
   <footer>
-    <strong>Pastaba / Note:</strong>
-    Kainos yra orientacinės didmeninės supirkimo kainos Lietuvos rinkoje, pagrįstos
-    viešai prieinamais duomenimis iš
-    <a href="https://www.vic.lt" target="_blank" rel="noopener">VIC</a> ir
-    <a href="https://www.zumis.lt" target="_blank" rel="noopener">ŽŪMIS</a>.
-    Kainos nurodytos EUR; gali skirtis pagal regioną, kokybę ir partijos dydį.
-    Duomenys atnaujinami savaitiškai. /
-    Prices are indicative wholesale prices in the Lithuanian market. Prices in EUR;
-    may vary by region, quality, and lot size. Data updated weekly.
+    <strong>Duomenų šaltinis / Data source:</strong>
+    <a href="https://ec.europa.eu/eurostat/databrowser/view/apri_ap_outa" target="_blank" rel="noopener">Eurostat apri_ap_outa</a>
+    — Absolute prices of agricultural products (selling prices of crop &amp; animal products), Lithuania.
+    Live kainos rodomos tokios, kokios užfiksuotos Eurostat metiniu lygiu; pakytis apskaičiuojamas metų lygmeniu.
+    Produktai, pažymėti „Pavyzdys", nėra Eurostat apima ir rodomi orientaciniai. /
+    Live prices reflect the latest annual Eurostat observation; change is year-on-year.
+    Products marked "Pavyzdys" are not covered by this Eurostat dataset and use indicative values.
   </footer>
 
 </main>
@@ -733,6 +784,155 @@ footer {
 <button id="back-top" title="Grįžti į viršų" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
 
 <script>
+/* ─── Eurostat API integration ───────────────────────────── */
+
+// Maps our product names to a function that tests an Eurostat label string.
+// Order matters: more specific patterns must come before general ones.
+const PRODUCT_MATCHERS = [
+  ['Kvietys (maistinis)',        l => /milling wheat|bread wheat/i.test(l)],
+  ['Kvietys (šilkiniai)',        l => /common wheat|soft wheat|\bwheat\b/i.test(l)],
+  ['Rugiai',                     l => /^rye\b/i.test(l.trim())],
+  ['Miežiai (salykliniai)',      l => /barley/i.test(l) && /malt/i.test(l)],
+  ['Miežiai (šilumos)',          l => /\bbarley\b/i.test(l)],
+  ['Avižos',                     l => /\boats\b/i.test(l)],
+  ['Kukurūzai',                  l => /\b(grain )?maize\b/i.test(l)],
+  ['Rapsas (žieminis)',          l => /rape/i.test(l) && /winter/i.test(l)],
+  ['Rapsas (vasarinis)',         l => /rape/i.test(l) && /spring/i.test(l)],
+  ['Rapsas (žieminis)',          l => /\brape(seed)?\b/i.test(l)],
+  ['Saulėgrąžos',               l => /sunflower/i.test(l)],
+  ['Bulvės (valgomosios)',       l => /\bpotat/i.test(l) && !/seed|sweet/i.test(l)],
+  ['Pienas žalias (4% r.r.)',   l => /cows.{0,6}milk|raw milk/i.test(l)],
+  ['Sviestas (nesūdytas)',       l => /\bbutter\b/i.test(l)],
+  ['Sūris (holando tipo)',       l => /\bcheese\b/i.test(l)],
+  ['Kiauliena (karkasinė)',      l => /\b(pigs?|pork|swine)\b/i.test(l)],
+  ['Jautiena (karkasinė)',       l => /\b(cattle|beef|bovine)\b/i.test(l)],
+  ['Avies mėsa',                 l => /\b(sheep|lamb)\b/i.test(l)],
+  ['Viščiukai (karkasiniai)',    l => /\b(poultry|chicken|broiler)\b/i.test(l)],
+  ['Kiaušiniai (M, L, A kl.)', l => /\beggs?\b/i.test(l)],
+];
+
+function convertFromEurostat(val100kg, ourUnit) {
+  // Eurostat apri_ap_outa prices are in EUR/100 kg
+  if (ourUnit === 'EUR/t')   return +(val100kg * 10);
+  if (ourUnit === 'EUR/kg')  return +(val100kg / 100);
+  if (ourUnit === 'EUR/L')   return +(val100kg / 103);   // milk ~1.03 kg/L
+  if (ourUnit === 'EUR/vnt') return +(val100kg / 100 / 12.5); // ~12.5 eggs/kg
+  return +(val100kg / 100);
+}
+
+function parseEurostatSdmx(json) {
+  const dims   = json.id;
+  const sizes  = json.size;
+  const values = json.value;
+  if (!dims || !sizes || !values) throw new Error('Unexpected SDMX-JSON structure');
+
+  // Build flat-index strides (rightmost dimension has stride 1)
+  const strides = new Array(dims.length).fill(1);
+  for (let i = dims.length - 2; i >= 0; i--) strides[i] = strides[i + 1] * sizes[i + 1];
+
+  const dim = name => json.dimension[name]?.category || { index: {}, label: {} };
+  const timeCat = dim('time');
+  const prodCat = dim('product');
+  const unitCat = dim('unit');
+  const geoCat  = dim('geo');
+  const freqCat = dim('freq');
+
+  const years = Object.keys(timeCat.index).sort();
+  if (!years.length) throw new Error('No time data');
+  const curYear  = years[years.length - 1];
+  const prevYear = years.length > 1 ? years[years.length - 2] : null;
+
+  // Prefer EUR_100KG unit
+  const unitCode = Object.keys(unitCat.index).find(k => /EUR_100KG/i.test(k))
+                || Object.keys(unitCat.index)[0];
+
+  const geoI  = geoCat.index['LT']       ?? 0;
+  const freqI = freqCat.index['A']       ?? 0;
+  const unitI = unitCat.index[unitCode]  ?? 0;
+
+  function flatVal(prodCode, yearStr) {
+    if (!yearStr) return null;
+    const timeI = timeCat.index[yearStr];
+    const prodI = prodCat.index[prodCode];
+    if (timeI == null || prodI == null) return null;
+    let idx = 0;
+    dims.forEach((d, i) => {
+      if (d === 'freq')    idx += freqI * strides[i];
+      if (d === 'unit')    idx += unitI * strides[i];
+      if (d === 'product') idx += prodI * strides[i];
+      if (d === 'geo')     idx += geoI  * strides[i];
+      if (d === 'time')    idx += timeI * strides[i];
+    });
+    const v = values[String(idx)];
+    return v != null ? +v : null;
+  }
+
+  const priceMap = [];
+  for (const [code, label] of Object.entries(prodCat.label)) {
+    const cur  = flatVal(code, curYear);
+    const prev = flatVal(code, prevYear);
+    if (cur != null) priceMap.push({ code, label, cur, prev, year: curYear });
+  }
+  return { priceMap, year: curYear };
+}
+
+function applyEurostatData({ priceMap, year }) {
+  const usedCodes = new Set();
+  let matched = 0;
+
+  for (const [prodName, testFn] of PRODUCT_MATCHERS) {
+    const row = DATA.find(r => r.name === prodName && !r.isLive);
+    if (!row) continue;
+    const hit = priceMap.find(p => !usedCodes.has(p.code) && testFn(p.label));
+    if (!hit) continue;
+    usedCodes.add(hit.code);
+
+    const price = convertFromEurostat(hit.cur, row.unit);
+    const prev  = hit.prev ? convertFromEurostat(hit.prev, row.unit) : null;
+    const chg   = prev ? +((price - prev) / prev * 100).toFixed(1) : 0;
+    const lo    = prev ? Math.min(price, prev) : price * 0.92;
+    const hi    = prev ? Math.max(price, prev) : price * 1.08;
+    const dp    = row.unit === 'EUR/t' ? 0 : row.unit === 'EUR/vnt' ? 4 : 2;
+
+    row.price    = +price.toFixed(dp);
+    row.change   = chg;
+    row.min      = +(lo * 0.97).toFixed(dp);
+    row.max      = +(hi * 1.03).toFixed(dp);
+    row.dataYear = year;
+    row.isLive   = true;
+    matched++;
+  }
+  return matched;
+}
+
+async function fetchEurostatPrices() {
+  const url = 'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/apri_ap_outa?format=JSON&geo=LT&lang=en';
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(14000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const parsed  = parseEurostatSdmx(json);
+    const matched = applyEurostatData(parsed);
+    if (matched === 0) throw new Error('No products matched');
+    setBanner('live',
+      `Live duomenys · <a class="src-link" href="https://ec.europa.eu/eurostat" target="_blank" rel="noopener">Eurostat</a> ` +
+      `apri_ap_outa · <strong>${parsed.year}</strong> · ${matched} produktai atnaujinti`);
+    document.getElementById('stat-date').textContent = parsed.year;
+    render();
+  } catch (err) {
+    console.warn('Eurostat fetch failed:', err.message);
+    setBanner('sample',
+      'Pavyzdiniai duomenys (Eurostat API nepasiekiamas šiame tinkle) · ' +
+      '<a class="src-link" href="https://ec.europa.eu/eurostat/databrowser/view/apri_ap_outa" target="_blank" rel="noopener">Peržiūrėti Eurostat</a>');
+  }
+}
+
+function setBanner(state, html) {
+  const b = document.getElementById('source-banner');
+  b.className = 'source-banner ' + state;
+  document.getElementById('src-text').innerHTML = html;
+}
+
 /* ─── Data ───────────────────────────────────────────────── */
 const DATA = [
   // Grūdai
@@ -886,6 +1086,9 @@ function renderCards(rows) {
           <div class="range-dot"  style="left:${pct}%; background:${cc.color}; box-shadow:0 0 0 2px ${cc.color}"></div>
         </div>
       </div>
+      ${r.isLive
+        ? `<span class="data-pill live">● Live · Eurostat ${r.dataYear}</span>`
+        : `<span class="data-pill est">◌ Pavyzdys</span>`}
     </div>`;
   }).join('');
 }
@@ -901,6 +1104,9 @@ function renderTable(rows) {
       <td>
         <div class="tbl-name">${r.name}</div>
         <div class="tbl-name-en">${r.nameEn}</div>
+        ${r.isLive
+          ? `<span class="data-pill live">● Live ${r.dataYear}</span>`
+          : `<span class="data-pill est">◌ Pavyzdys</span>`}
       </td>
       <td><span class="cat-pill" style="background:${cc.bg}; color:${cc.color}">${r.catEm} ${r.cat}</span></td>
       <td class="tbl-price">${fmtNum(r.price, r.unit)}</td>
@@ -1077,6 +1283,7 @@ document.getElementById('btn-cards').classList.add('active');
 
 buildChips();
 render();
+fetchEurostatPrices();
 </script>
 </body>
 </html>
