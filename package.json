@@ -1,0 +1,13 @@
+{
+  "name": "lt-farm-prices",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lithuanian farm products wholesale price dashboard (farm-prices.html) and the VIC bulletin data pipeline.",
+  "scripts": {
+    "fetch-prices": "node scripts/fetch-vic-prices.js"
+  },
+  "comments": {
+    "fetch-prices": "Regenerates data/prices.json. Currently a stub that writes seed values flagged verified:false. To produce real data, implement downloadBulletin()/parseBulletin() in scripts/fetch-vic-prices.js — see scripts/README.md.",
+    "futureDeps": "When implementing the real parser, add ONE of: 'pdf-parse' (PDF text) or 'xlsx' (Excel), depending on the VIC bulletin format."
+  }
+}
