@@ -581,6 +581,14 @@ footer {
   color: var(--text-3);
   line-height: 1.7;
 }
+footer a { color: var(--lt-green); }
+footer code {
+  font-size: .72rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
 
 /* ─── Source banner ──────────────────────────────────────── */
 .source-banner {
@@ -715,7 +723,7 @@ footer {
   <!-- Source banner -->
   <div id="source-banner" class="source-banner loading">
     <span class="src-dot"></span>
-    <span id="src-text">Jungiamasi prie Eurostat tiesioginių duomenų…</span>
+    <span id="src-text">Įkeliami VIC savaitės biuletenio duomenys…</span>
   </div>
 
   <!-- Toolbar -->
@@ -771,12 +779,14 @@ footer {
 
   <footer>
     <strong>Duomenų šaltinis / Data source:</strong>
-    <a href="https://ec.europa.eu/eurostat/databrowser/view/apri_ap_outa" target="_blank" rel="noopener">Eurostat apri_ap_outa</a>
-    — Absolute prices of agricultural products (selling prices of crop &amp; animal products), Lithuania.
-    Tiesioginės kainos atitinka naujausią Eurostat metinį stebėjimą; pokytis skaičiuojamas lyginant su praėjusiais metais.
-    Produktams, pažymėtiems „Pavyzdys“, šis Eurostat duomenų rinkinys netaikomas, todėl rodomos orientacinės kainos. /
-    Live prices reflect the latest annual Eurostat observation; change is year-on-year.
-    Products marked "Pavyzdys" are not covered by this Eurostat dataset and use indicative values.
+    <a href="https://www.vic.lt/rinkotyra/" target="_blank" rel="noopener">VIC – Žemės ūkio ir maisto produktų rinkos informacinė sistema</a>,
+    savaitės biuleteniai (skelbiami kas ketvirtadienį). Kainos atnaujinamos kas savaitę paleidžiant
+    <code>npm run fetch-prices</code>, kuris perskaito biuletenį į <code>data/prices.json</code>.
+    Pokytis – savaitės prieš savaitę. Kol žymima „Negalutiniai“, rodomos orientacinės sėklinės reikšmės,
+    o ne patvirtintos VIC rinkos kainos. /
+    Source: VIC weekly market bulletins (published every Thursday). Prices are refreshed weekly by running
+    <code>npm run fetch-prices</code>. While marked “Negalutiniai”, figures are indicative seed values,
+    not verified VIC market prices.
   </footer>
 
 </main>
@@ -784,154 +794,85 @@ footer {
 <button id="back-top" title="Grįžti į viršų" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
 
 <script>
-/* ─── Eurostat API integration ───────────────────────────── */
+/* ─── VIC data loading ───────────────────────────────────────
+ * Prices come from a same-origin data file, data/prices.json, produced
+ * at build time by scripts/fetch-vic-prices.js from VIC weekly bulletins.
+ * The page never scrapes vic.lt directly (cross-origin + PDF = not possible
+ * in a browser). The embedded DATA/META below is only a fallback for when
+ * the JSON can't be fetched (e.g. opening the file via file://).
+ * ─────────────────────────────────────────────────────────── */
 
-// Maps our product names to a function that tests an Eurostat label string.
-// Order matters: more specific patterns must come before general ones.
-const PRODUCT_MATCHERS = [
-  ['Kviečiai (maistiniai)',        l => /milling wheat|bread wheat/i.test(l)],
-  ['Kviečiai (pašariniai)',        l => /common wheat|soft wheat|\bwheat\b/i.test(l)],
-  ['Rugiai',                     l => /^rye\b/i.test(l.trim())],
-  ['Miežiai (salykliniai)',      l => /barley/i.test(l) && /malt/i.test(l)],
-  ['Miežiai (pašariniai)',          l => /\bbarley\b/i.test(l)],
-  ['Avižos',                     l => /\boats\b/i.test(l)],
-  ['Kukurūzai',                  l => /\b(grain )?maize\b/i.test(l)],
-  ['Rapsas (žieminis)',          l => /rape/i.test(l) && /winter/i.test(l)],
-  ['Rapsas (vasarinis)',         l => /rape/i.test(l) && /spring/i.test(l)],
-  ['Rapsas (žieminis)',          l => /\brape(seed)?\b/i.test(l)],
-  ['Saulėgrąžos',               l => /sunflower/i.test(l)],
-  ['Bulvės (valgomosios)',       l => /\bpotat/i.test(l) && !/seed|sweet/i.test(l)],
-  ['Žalias pienas (4% rieb.)',   l => /cows.{0,6}milk|raw milk/i.test(l)],
-  ['Sviestas (nesūdytas)',       l => /\bbutter\b/i.test(l)],
-  ['Sūris (olandiško tipo)',       l => /\bcheese\b/i.test(l)],
-  ['Kiauliena (karkasinė)',      l => /\b(pigs?|pork|swine)\b/i.test(l)],
-  ['Jautiena (karkasinė)',       l => /\b(cattle|beef|bovine)\b/i.test(l)],
-  ['Aviena',                 l => /\b(sheep|lamb)\b/i.test(l)],
-  ['Viščiukai (karkasiniai)',    l => /\b(poultry|chicken|broiler)\b/i.test(l)],
-  ['Kiaušiniai (M, L, A kl.)', l => /\beggs?\b/i.test(l)],
-];
-
-function convertFromEurostat(val100kg, ourUnit) {
-  // Eurostat apri_ap_outa prices are in EUR/100 kg
-  if (ourUnit === 'EUR/t')   return +(val100kg * 10);
-  if (ourUnit === 'EUR/kg')  return +(val100kg / 100);
-  if (ourUnit === 'EUR/L')   return +(val100kg / 103);   // milk ~1.03 kg/L
-  if (ourUnit === 'EUR/vnt') return +(val100kg / 100 / 12.5); // ~12.5 eggs/kg
-  return +(val100kg / 100);
-}
-
-function parseEurostatSdmx(json) {
-  const dims   = json.id;
-  const sizes  = json.size;
-  const values = json.value;
-  if (!dims || !sizes || !values) throw new Error('Unexpected SDMX-JSON structure');
-
-  // Build flat-index strides (rightmost dimension has stride 1)
-  const strides = new Array(dims.length).fill(1);
-  for (let i = dims.length - 2; i >= 0; i--) strides[i] = strides[i + 1] * sizes[i + 1];
-
-  const dim = name => json.dimension[name]?.category || { index: {}, label: {} };
-  const timeCat = dim('time');
-  const prodCat = dim('product');
-  const unitCat = dim('unit');
-  const geoCat  = dim('geo');
-  const freqCat = dim('freq');
-
-  const years = Object.keys(timeCat.index).sort();
-  if (!years.length) throw new Error('No time data');
-  const curYear  = years[years.length - 1];
-  const prevYear = years.length > 1 ? years[years.length - 2] : null;
-
-  // Prefer EUR_100KG unit
-  const unitCode = Object.keys(unitCat.index).find(k => /EUR_100KG/i.test(k))
-                || Object.keys(unitCat.index)[0];
-
-  const geoI  = geoCat.index['LT']       ?? 0;
-  const freqI = freqCat.index['A']       ?? 0;
-  const unitI = unitCat.index[unitCode]  ?? 0;
-
-  function flatVal(prodCode, yearStr) {
-    if (!yearStr) return null;
-    const timeI = timeCat.index[yearStr];
-    const prodI = prodCat.index[prodCode];
-    if (timeI == null || prodI == null) return null;
-    let idx = 0;
-    dims.forEach((d, i) => {
-      if (d === 'freq')    idx += freqI * strides[i];
-      if (d === 'unit')    idx += unitI * strides[i];
-      if (d === 'product') idx += prodI * strides[i];
-      if (d === 'geo')     idx += geoI  * strides[i];
-      if (d === 'time')    idx += timeI * strides[i];
-    });
-    const v = values[String(idx)];
-    return v != null ? +v : null;
-  }
-
-  const priceMap = [];
-  for (const [code, label] of Object.entries(prodCat.label)) {
-    const cur  = flatVal(code, curYear);
-    const prev = flatVal(code, prevYear);
-    if (cur != null) priceMap.push({ code, label, cur, prev, year: curYear });
-  }
-  return { priceMap, year: curYear };
-}
-
-function applyEurostatData({ priceMap, year }) {
-  const usedCodes = new Set();
-  let matched = 0;
-
-  for (const [prodName, testFn] of PRODUCT_MATCHERS) {
-    const row = DATA.find(r => r.name === prodName && !r.isLive);
-    if (!row) continue;
-    const hit = priceMap.find(p => !usedCodes.has(p.code) && testFn(p.label));
-    if (!hit) continue;
-    usedCodes.add(hit.code);
-
-    const price = convertFromEurostat(hit.cur, row.unit);
-    const prev  = hit.prev ? convertFromEurostat(hit.prev, row.unit) : null;
-    const chg   = prev ? +((price - prev) / prev * 100).toFixed(1) : 0;
-    const lo    = prev ? Math.min(price, prev) : price * 0.92;
-    const hi    = prev ? Math.max(price, prev) : price * 1.08;
-    const dp    = row.unit === 'EUR/t' ? 0 : row.unit === 'EUR/vnt' ? 4 : 2;
-
-    row.price    = +price.toFixed(dp);
-    row.change   = chg;
-    row.min      = +(lo * 0.97).toFixed(dp);
-    row.max      = +(hi * 1.03).toFixed(dp);
-    row.dataYear = year;
-    row.isLive   = true;
-    matched++;
-  }
-  return matched;
-}
-
-async function fetchEurostatPrices() {
-  const url = 'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/apri_ap_outa?format=JSON&geo=LT&lang=en';
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(14000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    const parsed  = parseEurostatSdmx(json);
-    const matched = applyEurostatData(parsed);
-    if (matched === 0) throw new Error('No products matched');
-    setBanner('live',
-      `Tiesioginiai duomenys · <a class="src-link" href="https://ec.europa.eu/eurostat" target="_blank" rel="noopener">Eurostat</a> ` +
-      `apri_ap_outa · <strong>${parsed.year}</strong> · atnaujinta ${matched} ${ltPlural(matched, 'produktas', 'produktai', 'produktų')}`);
-    document.getElementById('stat-date').textContent = parsed.year;
-    render();
-  } catch (err) {
-    console.warn('Eurostat fetch failed:', err.message);
-    setBanner('sample',
-      'Pavyzdiniai duomenys (Eurostat API nepasiekiamas šiame tinkle) · ' +
-      '<a class="src-link" href="https://ec.europa.eu/eurostat/databrowser/view/apri_ap_outa" target="_blank" rel="noopener">Peržiūrėti Eurostat</a>');
-  }
-}
+// Provenance metadata; overwritten by data/prices.json when it loads.
+let META = {
+  source:      'VIC – Žemės ūkio ir maisto produktų rinkos informacinė sistema',
+  sourceUrl:   'https://www.vic.lt/rinkotyra/',
+  weekLabel:   '—',
+  periodStart: null,
+  periodEnd:   null,
+  generatedAt: null,
+  verified:    false,
+  notice:      'Naudojami į puslapį įdėti atsarginiai duomenys (data/prices.json nepasiekiamas).',
+};
 
 function setBanner(state, html) {
   const b = document.getElementById('source-banner');
   b.className = 'source-banner ' + state;
   document.getElementById('src-text').innerHTML = html;
 }
+
+function fmtPeriod(m) {
+  if (!m.periodStart || !m.periodEnd) return m.weekLabel || '';
+  const f = s => new Date(s).toLocaleDateString('lt-LT', { month: 'short', day: 'numeric' });
+  return `${m.weekLabel} · ${f(m.periodStart)}–${f(m.periodEnd)}`;
+}
+
+function renderProvenance() {
+  // Stat card date
+  document.getElementById('stat-date').textContent = META.weekLabel || '—';
+
+  const srcLink = `<a class="src-link" href="${META.sourceUrl}" target="_blank" rel="noopener">VIC</a>`;
+  if (META.verified) {
+    setBanner('live',
+      `Patvirtinti ${srcLink} savaitės biuletenio duomenys · <strong>${fmtPeriod(META)}</strong>`);
+  } else {
+    setBanner('sample',
+      `⚠ Negalutiniai (orientaciniai) duomenys · ${srcLink} biuletenio analizatorius dar neįdiegtas · ` +
+      `<strong>${fmtPeriod(META)}</strong>`);
+  }
+}
+
+// HTML for the per-row data badge, driven by global verification state.
+function dataPill() {
+  return META.verified
+    ? `<span class="data-pill live">● VIC ${META.weekLabel}</span>`
+    : `<span class="data-pill est">◌ Negalutiniai</span>`;
+}
+
+async function loadPrices() {
+  setBanner('loading', 'Įkeliami VIC savaitės biuletenio duomenys…');
+  try {
+    const res = await fetch('data/prices.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (!json.products || !json.products.length) throw new Error('No products in data file');
+
+    META = json.meta || META;
+    // DATA is const; mutate in place so existing references stay valid.
+    DATA.length = 0;
+    json.products.forEach(p => DATA.push(p));
+
+    buildChips();   // rebuild counts from the loaded set
+    render();
+    renderProvenance();
+    console.info(`Loaded ${DATA.length} products from data/prices.json (${META.weekLabel}, verified: ${META.verified}).`);
+  } catch (err) {
+    console.warn('Could not load data/prices.json, using embedded fallback:', err.message);
+    setBanner('sample',
+      '⚠ Naudojami atsarginiai duomenys (data/prices.json nepasiekiamas, pvz. atvėrus per file://). ' +
+      'Paleiskite per HTTP serverį, kad būtų įkelti naujausi VIC duomenys.');
+  }
+}
+
 
 /* ─── Data ───────────────────────────────────────────────── */
 const DATA = [
@@ -1093,9 +1034,7 @@ function renderCards(rows) {
           <div class="range-dot"  style="left:${pct}%; background:${cc.color}; box-shadow:0 0 0 2px ${cc.color}"></div>
         </div>
       </div>
-      ${r.isLive
-        ? `<span class="data-pill live">● Eurostat ${r.dataYear}</span>`
-        : `<span class="data-pill est">◌ Pavyzdys</span>`}
+      ${dataPill()}
     </div>`;
   }).join('');
 }
@@ -1111,9 +1050,7 @@ function renderTable(rows) {
       <td>
         <div class="tbl-name">${r.name}</div>
         <div class="tbl-name-en">${r.nameEn}</div>
-        ${r.isLive
-          ? `<span class="data-pill live">● Eurostat ${r.dataYear}</span>`
-          : `<span class="data-pill est">◌ Pavyzdys</span>`}
+        ${dataPill()}
       </td>
       <td><span class="cat-pill" style="background:${cc.bg}; color:${cc.color}">${r.catEm} ${r.cat}</span></td>
       <td class="tbl-price">${fmtNum(r.price, r.unit)}</td>
@@ -1284,13 +1221,12 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 /* ─── Init ───────────────────────────────────────────────── */
-document.getElementById('stat-date').textContent =
-  new Date().toLocaleDateString('lt-LT', { year:'numeric', month:'short', day:'numeric' });
 document.getElementById('btn-cards').classList.add('active');
 
 buildChips();
 render();
-fetchEurostatPrices();
+renderProvenance();   // show embedded-fallback provenance immediately
+loadPrices();         // then load data/prices.json and re-render
 </script>
 </body>
 </html>
